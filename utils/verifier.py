@@ -1,4 +1,5 @@
 import pytesseract
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 import numpy as np
 import cv2
 
