@@ -16,12 +16,14 @@ def verify_payment():
     file = request.files['screenshot']
     try:
         image = Image.open(file.stream)
-        color_status = detect_color_status(image)
-        result['color_status'] = color_status
+
         result = extract_payment_info(image)
         result['logo_verified'] = verify_logo(image)
         result['photoshop_detected'] = detect_photoshop(image)
+        result['color_status'] = detect_color_status(image)
+
         return jsonify(result)
+
     except Exception as e:
         return jsonify({'error': 'Failed to process image', 'details': str(e)}), 500
 
