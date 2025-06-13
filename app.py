@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template
-from utils.verifier import extract_payment_info, verify_logo, detect_photoshop
+from utils.verifier import extract_payment_info, verify_logo, detect_photoshop, detect_color_status
 from PIL import Image
 
 app = Flask(__name__)
@@ -16,6 +16,8 @@ def verify_payment():
     file = request.files['screenshot']
     try:
         image = Image.open(file.stream)
+        color_status = detect_color_status(image)
+        result['color_status'] = color_status
         result = extract_payment_info(image)
         result['logo_verified'] = verify_logo(image)
         result['photoshop_detected'] = detect_photoshop(image)
