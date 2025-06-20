@@ -1,8 +1,10 @@
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS  # 🔹 Import CORS
 from utils.verifier import extract_payment_info, verify_logo, detect_photoshop, detect_color_status
 from PIL import Image
 
 app = Flask(__name__)
+CORS(app, origins=["https://turraniesports.vercel.app", "http://localhost:3000"])  # 🔹 Enable CORS for all domains (for testing only)
 
 @app.route('/')
 def index():
@@ -29,3 +31,4 @@ def verify_payment():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
