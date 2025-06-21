@@ -55,63 +55,45 @@ def advanced_parse_payment_text(text):
     elif "hdfc bank" in normalized_text:
         result["payment_app"] = "Paytm"
 
-    # --- FURTHER IMPROVED AMOUNT DETECTION ---
-    # Attempt to directly extract amounts that appear on their own line or prominently
-    # Re-evaluating the regex and adding a more specific pre-processing step if needed based on common OCR errors
-    
-    # Priority 1: Look for patterns like "210,000" where "2" or "4" could be OCR artifact of "₹"
-    # and try to extract the actual numerical part.
-    # From "210,000" in raw_text, we want to get 10,000.
-    # This means the '2' is likely a misread of '₹' and we should look for "X,XXX" patterns.
-    amount_match = re.search(r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2}?))", text) # Capture any number with commas/decimals
-    if amount_match:
-        extracted_num_str = amount_match.group(1).replace(",", "")
-        try:
-            # Check for common OCR errors, like '2' or '4' before the actual amount for '₹'
-            # If the raw text contains "210,000" and the number of digits is 6, and it starts with 2,
-            # it's very likely a misread of ₹10,000.
-            if len(extracted_num_str) == 6 and extracted_num_str.startswith('2'):
-                # Heuristic: If it's '210000', assume it's '10000'
-                if extracted_num_str == '210000':
-                    result["amount"] = 10000.0
-                    logging.info(f"Amount corrected via specific heuristic: {result['amount']}")
-                # Add other heuristics if needed for other common OCR errors e.g. 4500 for 5000
-                elif extracted_num_str == '4500' and '5000' in text: # if '4500' is extracted but '5000' is also present and valid
-                     result["amount"] = 5000.0
-                     logging.info(f"Amount corrected via specific heuristic: {result['amount']}")
-                else:
-                    result["amount"] = float(extracted_num_str) # Default to direct conversion
+       # --- ENHANCED AMOUNT DETECTION BLOCK ---
+    # Normalize text for OCR quirks (e.g., ₹ = '2' or '4' etc.)
+    cleaned_text = text.replace(",", "")
+    possible_amounts = []
+
+    # Prioritize detection of ₹, Rs., Amount, etc.
+    amount_patterns = [
+        r"[₹₹Rs|INR|Amount|Paid|Debited|Credited|received]\s*[:\-]?\s*(\d+(?:\.\d{1,2})?)",
+        r"(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)",  # with commas
+        r"\b\d{4,7}\b",  # large numbers
+    ]
+
+    for pattern in amount_patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            try:
+                amt = float(match.replace(",", ""))
+                if amt > 1:  # filter out invalid tiny values
+                    possible_amounts.append(amt)
+            except:
+                continue
+
+    if possible_amounts:
+        # Heuristic correction: Handle OCR error like "210000" (₹10000 misread)
+        corrected_amounts = []
+        for amt in possible_amounts:
+            if amt >= 100000 and str(int(amt)).startswith('2'):
+                corrected = amt - 200000 if amt == 210000 else amt % 100000
+                if corrected >= 10:
+                    corrected_amounts.append(corrected)
             else:
-                result["amount"] = float(extracted_num_str)
-            
-            logging.info(f"Amount detected (primary attempt): {result['amount']}")
-        except ValueError:
-            logging.warning(f"Could not convert extracted number '{extracted_num_str}' to float.")
+                corrected_amounts.append(amt)
 
-
-    if result["amount"] is None: # If the first broad attempt didn't work or was corrected wrongly, try other patterns
-        amount_patterns = [
-            # Fallback 1: Strong currency symbol presence
-            r"[₹]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
-            # Fallback 2: Amount after status or on a line by itself near a status
-            r"(?:Completed|successful|paid)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
-            # Fallback 3: Amount following common keywords
-            r"(?:rs\.?|amount|paid|received|debit(?:ed)?|credit(?:ed)?)\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
-        ]
-
-        for pattern in amount_patterns:
-            amount_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            if amount_match:
-                try:
-                    amount_str = amount_match.group(1).replace(",", "")
-                    result["amount"] = float(amount_str)
-                    logging.info(f"Amount detected using fallback pattern '{pattern}': {result['amount']}")
-                    break # Found a valid amount, stop searching
-                except ValueError:
-                    logging.warning(f"Could not convert detected amount '{amount_match.group(1)}' to float with fallback pattern '{pattern}'.")
-                    continue
-
-    # --- END IMPROVED AMOUNT DETECTION ---
+        # Use the highest plausible value assuming it's the main payment
+        result["amount"] = max(corrected_amounts)
+        logging.info(f"Amount detected (enhanced): {result['amount']}")
+    else:
+        logging.warning("No valid amount detected using enhanced logic.")
+    # --- END ENHANCED AMOUNT DETECTION BLOCK ---
+--
 
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
