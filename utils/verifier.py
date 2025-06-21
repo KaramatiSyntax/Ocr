@@ -5,12 +5,44 @@ import cv2
 from PIL import Image
 from PIL.ExifTags import TAGS
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def advanced_parse_payment_text(text):
+
+def extract_payment_info(image: Image.Image) -> dict:
+    """Extracts OCR text from the image and parses structured payment info."""
+    text = pytesseract.image_to_string(image)
+    logging.info(f"OCR extracted text:\n{text[:500]}...")
+    return advanced_parse_payment_text(text)
+
+
+def detect_photoshop(image: Image.Image) -> bool:
+    """Checks for signs of Photoshop or editing in EXIF metadata."""
+    try:
+        exif_data = image._getexif()
+        if not exif_data:
+            logging.info("No EXIF data found. Might be original or edited without metadata.")
+            return False
+
+        for tag_id, value in exif_data.items():
+            tag = TAGS.get(tag_id, tag_id)
+            if tag in ['Software', 'ProcessingSoftware', 'CreatorTool']:
+                if any(editor in str(value) for editor in ['Adobe', 'Photoshop', 'GIMP', 'Fotor']):
+                    logging.warning(f"Editing software '{value}' detected.")
+                    return True
+
+        logging.info("No signs of editing software in EXIF.")
+        return False
+
+    except Exception as e:
+        logging.error(f"Error during Photoshop detection: {e}")
+        return False
+
+
+def advanced_parse_payment_text(text: str) -> dict:
+    """Parses raw OCR payment text into structured data."""
     result = {
         "raw_text": text,
         "amount": None,
@@ -34,164 +66,120 @@ def advanced_parse_payment_text(text):
         "payment_app": "Unknown"
     }
 
-    normalized_text = text.lower().replace("\n", " ")
+    normalized = text.lower().replace("\n", " ")
 
-    if re.search(r"(successful|success|completed|paid successfully|transaction successful)", normalized_text):
+    # Status detection
+    if re.search(r"(successful|success|completed|paid successfully|transaction successful)", normalized):
         result["status"] = "Success"
-    elif re.search(r"(failed|failure)", normalized_text):
+    elif re.search(r"(failed|failure)", normalized):
         result["status"] = "Failed"
-    elif re.search(r"(pending)", normalized_text):
+    elif "pending" in normalized:
         result["status"] = "Pending"
 
-    if "paytm" in normalized_text and "@paytm" in normalized_text:
+    # Payment app detection
+    if "paytm" in normalized and "@paytm" in normalized:
         result["payment_app"] = "Paytm"
-    elif "phonepe" in normalized_text or "phone pe" in normalized_text:
+    elif "phonepe" in normalized or "phone pe" in normalized:
         result["payment_app"] = "PhonePe"
-    elif "google pay" in normalized_text or "gpay" in normalized_text:
+    elif any(x in normalized for x in ["google pay", "gpay", "punjab national bank"]):
         result["payment_app"] = "Google Pay"
-    elif "punjab national bank" in normalized_text:
-        result["payment_app"] = "Google Pay"
-    elif "hdfc bank" in normalized_text:
+    elif "hdfc bank" in normalized:
         result["payment_app"] = "Paytm"
 
+    # Amount detection
     amount_match = re.search(r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2}?))", text)
     if amount_match:
-        extracted_num_str = amount_match.group(1).replace(",", "")
         try:
-            if len(extracted_num_str) == 6 and extracted_num_str.startswith('2'):
-                if extracted_num_str == '210000':
-                    result["amount"] = 10000.0
-                    logging.info(f"Amount corrected via specific heuristic: {result['amount']}")
-                elif extracted_num_str == '4500' and '5000' in text:
-                    result["amount"] = 5000.0
-                    logging.info(f"Amount corrected via specific heuristic: {result['amount']}")
-                else:
-                    result["amount"] = float(extracted_num_str)
-            else:
-                result["amount"] = float(extracted_num_str)
-            logging.info(f"Amount detected (primary attempt): {result['amount']}")
+            result["amount"] = float(amount_match.group(1).replace(",", ""))
         except ValueError:
-            logging.warning(f"Could not convert extracted number '{extracted_num_str}' to float.")
+            logging.warning(f"Could not convert amount: {amount_match.group(1)}")
 
-    if result["amount"] is None:
-        amount_patterns = [
+    if not result["amount"]:
+        for pattern in [
             r"[₹]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
-            r"(?:Completed|successful|paid)\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
             r"(?:rs\.?|amount|paid|received|debit(?:ed)?|credit(?:ed)?)\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
-        ]
-
-        for pattern in amount_patterns:
-            amount_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            if amount_match:
+        ]:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
                 try:
-                    amount_str = amount_match.group(1).replace(",", "")
-                    result["amount"] = float(amount_str)
-                    logging.info(f"Amount detected using fallback pattern '{pattern}': {result['amount']}")
+                    result["amount"] = float(match.group(1).replace(",", ""))
                     break
                 except ValueError:
-                    logging.warning(f"Could not convert detected amount '{amount_match.group(1)}' to float with fallback pattern '{pattern}'.")
                     continue
 
-    datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
-    if datetime_combined_match:
-        result["time"] = datetime_combined_match.group(1).strip()
-        result["date"] = datetime_combined_match.group(2).strip()
+    # Date/Time detection
+    dt_match = re.search(
+        r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})",
+        text, re.IGNORECASE)
+    if dt_match:
+        result["time"], result["date"] = dt_match.group(1).strip(), dt_match.group(2).strip()
     else:
-        for date_pattern in [
+        date_patterns = [
             r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\b",
             r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b",
             r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"
-        ]:
-            date_match = re.search(date_pattern, text)
-            if date_match:
-                result["date"] = date_match.group(1).strip()
+        ]
+        for dp in date_patterns:
+            dm = re.search(dp, text)
+            if dm:
+                result["date"] = dm.group(1).strip()
                 break
+        tm = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M?)\b", text, re.IGNORECASE)
+        if tm:
+            result["time"] = tm.group(1).strip()
 
-        time_match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M?)\b", text, re.IGNORECASE)
-        if time_match:
-            result["time"] = time_match.group(1).strip()
-
+    # Transaction ID fields
     txn_id_patterns = {
         "transaction_id": r"(?:Transaction ID|TID|Txn ID|Trans ID)[:\s]*([A-Za-z0-9-]+)",
-        "upi_ref_no": r"(?:UPI Ref No|UPI Ref|Reference No)[:\s]*([0-9]+)",
+        "upi_ref_no": r"(?:UPI Ref No|Reference No)[:\s]*([0-9]+)",
         "order_id": r"(?:Order ID|Order No)[:\s]*([0-9]+)",
         "utr": r"(?:UTR|UTR No)[:\s]*([0-9]{10,})",
         "google_transaction_id": r"(?:Google transaction ID|Google Txn ID)[:\s]*([A-Za-z0-9-]+)",
         "upi_transaction_id": r"(?:UPI transaction ID|UPI Txn ID)[:\s]*([0-9]+)"
     }
-
     for key, pattern in txn_id_patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             result[key] = match.group(1).strip()
 
-    if not (result["transaction_id"] or result["upi_ref_no"] or result["utr"] or result["order_id"] or result["google_transaction_id"] or result["upi_transaction_id"]):
+    if not any(result[k] for k in ["transaction_id", "upi_ref_no", "utr", "order_id", "google_transaction_id", "upi_transaction_id"]):
         generic_txn_match = re.search(r"\b([A-Z0-9]{12,})\b", text)
         if generic_txn_match:
             result["transaction_id"] = generic_txn_match.group(1)
 
-    from_person_match = re.search(r"From\s*([A-Za-z\s.]+?)(?:\s*\+?\d{10}|\s*UPI ID:|\s*Bank|\n|$)", text, re.IGNORECASE | re.DOTALL)
-    if from_person_match:
-        result["from_person"] = from_person_match.group(1).strip()
-    elif "From Vijay Kumarvijay" in text:
-         result["from_person"] = "Vijay Kumarvijay"
+    # From Person / UPI / Phone
+    from_person = re.search(r"From\s*([A-Za-z\s.]+?)(?:\s*\+?\d{10}|\s*UPI ID:|\s*Bank|\n|$)", text, re.IGNORECASE)
+    if from_person:
+        result["from_person"] = from_person.group(1).strip()
 
-    from_upi_id_match = re.search(r"(?:From\s+.*?|Google Pay\s+)?([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
-    if from_upi_id_match:
-        result["from_upi_id"] = from_upi_id_match.group(1).strip()
+    upi_match = re.search(r"(?:From\s+.*?|Google Pay\s+)?([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text)
+    if upi_match:
+        result["from_upi_id"] = upi_match.group(1).strip()
 
-    from_phone_match = re.search(r"(?:From|Sender):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text, re.IGNORECASE)
-    if from_phone_match:
-        result["from_phone_number"] = from_phone_match.group(1).strip()
+    phone_match = re.search(r"(?:From|Sender):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text)
+    if phone_match:
+        result["from_phone_number"] = phone_match.group(1).strip()
 
-    from_bank_match = re.search(r"(?:From|Debited from)\s+([A-Za-z\s]+?)\s*(?:Bank|P?N?B?\s+\d{4}|HDFC Bank\s*-\s*\d{4})", text, re.IGNORECASE)
-    if from_bank_match:
-        result["from_bank"] = from_bank_match.group(1).strip()
-
-    to_person_patterns = [
+    # To Person
+    for pattern in [
         r"To:\s*([A-Za-z\s.]+?)(?:\n|UPI ID:|Bank|$)",
         r"Paid to\s*([A-Za-z\s.]+?)(?:\n|\+?\d{10}|UPI ID:|Bank|$)",
         r"Banking Name\s*:\s*([A-Za-z\s]+)",
-    ]
-
-    for pattern in to_person_patterns:
-        to_person_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-        if to_person_match:
-            result["to_person"] = to_person_match.group(1).strip()
-            result["to_person"] = re.sub(r'\s*(\+?\d{10}|UPI ID:|Bank|Google Pay|PhonePe|Paytm).*', '', result["to_person"], flags=re.IGNORECASE).strip()
-            if result["to_person"].upper() == "S" and "SANJANA SHUKLA" in text.upper():
-                result["to_person"] = "SANJANA SHUKLA"
+    ]:
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            person = match.group(1).strip()
+            person = re.sub(r'\s*(\+?\d{10}|UPI ID:|Bank|Google Pay|PhonePe|Paytm).*', '', person)
+            result["to_person"] = person.strip()
             break
 
-    to_upi_id_match = re.search(r"(?:To\s+.*?|UPI ID:)\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
-    if to_upi_id_match:
-        result["to_upi_id"] = to_upi_id_match.group(1).strip()
+    # To UPI and Phone
+    to_upi_match = re.search(r"(?:To\s+.*?|UPI ID:)\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
+    if to_upi_match:
+        result["to_upi_id"] = to_upi_match.group(1).strip()
 
-    to_phone_match = re.search(r"(?:To|Paid to):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text, re.IGNORECASE)
+    to_phone_match = re.search(r"(?:To|Paid to):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text)
     if to_phone_match:
         result["to_phone_number"] = to_phone_match.group(1).strip()
 
     return result
-
-def detect_photoshop(image):
-    try:
-        exif_data = image._getexif()
-        if not exif_data:
-            logging.info("No EXIF data found. Could be an indication of editing or simply original photo.")
-            return False
-        for tag_id, value in exif_data.items():
-            tag = TAGS.get(tag_id, tag_id)
-            if tag in ['Software', 'ProcessingSoftware', 'CreatorTool']:
-                if 'Adobe' in str(value) or 'Photoshop' in str(value) or 'GIMP' in str(value) or 'Fotor' in str(value):
-                    logging.warning(f"Photoshop/Editing software '{value}' detected in EXIF data.")
-                    return True
-        logging.info("No suspicious editing software detected in EXIF data.")
-        return False
-    except Exception as e:
-        logging.error(f"Error during Photoshop detection: {e}")
-        return False
-
-def extract_payment_info(image):
-    text = pytesseract.image_to_string(image)
-    logging.info(f"OCR extracted text:\n{text[:500]}...")
-    return advanced_parse_payment_text(text)
