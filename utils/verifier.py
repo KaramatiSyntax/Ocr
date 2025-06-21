@@ -168,17 +168,17 @@ def detect_photoshop(image):
         return False
 
 
-# --- MODIFIED determine_verification_status function for exactly 5 checks ---
+# --- MODIFIED determine_verification_status function for exactly 6 checks ---
 def determine_verification_status(extracted_data):
     """
-    Determines the overall verification status as a percentage based on exactly 5 required checks.
+    Determines the overall verification status as a percentage based on exactly 6 required checks.
     """
     passed_checks = 0
     total_checks = 0
     reasons_false = []
     target_paid_to = "VINAYAK KUMAR SHUKLA"
 
-    logging.info(f"Starting 5-check verification for data: {extracted_data}")
+    logging.info(f"Starting 6-check verification for data: {extracted_data}")
     current_time_ist = datetime.now()
 
 
@@ -201,19 +201,33 @@ def determine_verification_status(extracted_data):
         reasons_false.append("Amount could not be detected or is invalid.")
         logging.info("Check 2 (Amount): FAILED")
 
+    # --- NEW Check 3: Transaction ID Detected (required) ---
+    total_checks += 1
+    if (extracted_data.get("transaction_id") or
+            extracted_data.get("upi_ref_no") or
+            extracted_data.get("order_id") or
+            extracted_data.get("utr") or
+            extracted_data.get("google_transaction_id") or
+            extracted_data.get("upi_transaction_id")):
+        passed_checks += 1
+        logging.info("Check 3 (Transaction ID): PASSED")
+    else:
+        reasons_false.append("No valid transaction/reference ID found.")
+        logging.info("Check 3 (Transaction ID): FAILED")
 
-    # Check 3: Paid-to must be VINAYAK KUMAR SHUKLA (required)
+
+    # Check 4: Paid-to must be VINAYAK KUMAR SHUKLA (required)
     total_checks += 1
     detected_to_person = extracted_data.get("to_person")
     if detected_to_person and detected_to_person.strip().upper() == target_paid_to.strip().upper():
         passed_checks += 1
-        logging.info("Check 3 (Target Paid-to): PASSED")
+        logging.info("Check 4 (Target Paid-to): PASSED")
     else:
         reasons_false.append(f"Paid-to person does not match '{target_paid_to}'. Detected: '{detected_to_person}'.")
-        logging.info(f"Check 3 (Target Paid-to): FAILED - Detected: '{detected_to_person}'")
+        logging.info(f"Check 4 (Target Paid-to): FAILED - Detected: '{detected_to_person}'")
 
 
-    # Check 4: Date and Time Detected & Not older than 24 hours (required)
+    # Check 5: Date and Time Detected & Not older than 24 hours (required)
     total_checks += 1
     extracted_date_str = extracted_data.get("date")
     extracted_time_str = extracted_data.get("time")
@@ -246,35 +260,35 @@ def determine_verification_status(extracted_data):
 
                 if time_difference < timedelta(minutes=-2):
                     reasons_false.append(f"Screenshot date/time is in the future. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Check 4 (Date/Time): FAILED - In future. Diff: {time_difference}")
+                    logging.warning(f"Check 5 (Date/Time): FAILED - In future. Diff: {time_difference}")
                 elif time_difference > max_allowed_difference:
                     reasons_false.append(f"Screenshot is older than 24 hours. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time_ist.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Check 4 (Date/Time): FAILED - Too old. Diff: {time_difference}")
+                    logging.warning(f"Check 5 (Date/Time): FAILED - Too old. Diff: {time_difference}")
                 else:
                     date_time_check_passed = True
-                    logging.info("Check 4 (Date/Time): PASSED")
+                    logging.info("Check 5 (Date/Time): PASSED")
             else:
                 reasons_false.append("Could not parse extracted date and time into a comparable format.")
-                logging.warning(f"Check 4 (Date/Time): FAILED - Parsing failed for '{full_datetime_str}'.")
+                logging.warning(f"Check 5 (Date/Time): FAILED - Parsing failed for '{full_datetime_str}'.")
         except Exception as e:
             reasons_false.append(f"Error during date/time comparison: {e}")
-            logging.error(f"Check 4 (Date/Time): FAILED - Error: {e}")
+            logging.error(f"Check 5 (Date/Time): FAILED - Error: {e}")
     else:
         reasons_false.append("Date or Time information not fully detected, cannot verify recency.")
-        logging.warning("Check 4 (Date/Time): FAILED - Partial date/time info.")
+        logging.warning("Check 5 (Date/Time): FAILED - Partial date/time info.")
 
     if date_time_check_passed:
         passed_checks += 1
 
 
-    # Check 5: Photoshop Detection
+    # Check 6: Photoshop Detection
     total_checks += 1
     if extracted_data.get("photoshop_detected", False):
         reasons_false.append("Potential Photoshop manipulation detected.")
-        logging.warning("Check 5 (Photoshop): FAILED - Manipulation detected.")
+        logging.warning("Check 6 (Photoshop): FAILED - Manipulation detected.")
     else:
         passed_checks += 1
-        logging.info("Check 5 (Photoshop): PASSED")
+        logging.info("Check 6 (Photoshop): PASSED")
 
 
     # Calculate percentage
@@ -284,10 +298,9 @@ def determine_verification_status(extracted_data):
     verified_percentage = round(verified_percentage, 2)
 
     # Final decision for "verified: true/false"
-    # With 5 checks, 5/5 = 100%, 4/5 = 80%, 3/5 = 60%.
-    # A threshold of >= 80% means at least 4 out of 5 core checks must pass.
-    # If Photoshop is detected, it should still strongly override.
-    final_verified_bool = (verified_percentage >= 80) # Recommended threshold for 5 checks
+    # With 6 checks: 6/6 = 100%, 5/6 = 83.33%, 4/6 = 66.67%
+    # A threshold of >= 80% means at least 5 out of 6 core checks must pass.
+    final_verified_bool = (verified_percentage >= 80) # Still a good threshold for 6 checks
 
     # Override if Photoshop was detected
     if extracted_data.get("photoshop_detected", False):
