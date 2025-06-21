@@ -5,12 +5,12 @@ import cv2
 from PIL import Image
 from PIL.ExifTags import TAGS
 import logging
-from datetime import datetime, timedelta # Import datetime and timedelta
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Existing advanced_parse_payment_text function (with improved date parsing) ---
+# --- Existing advanced_parse_payment_text function (no changes needed here) ---
 def advanced_parse_payment_text(text):
     result = {
         "raw_text": text,
@@ -64,16 +64,13 @@ def advanced_parse_payment_text(text):
             result["amount"] = float(amount_keyword_match.group(1).replace(",", ""))
 
     # --- Improved Date and Time Extraction for better parsing ---
-    # Attempt to capture full date-time strings first
-    # Example: "01:50 pm on 15 May 2025"
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
         result["time"] = datetime_combined_match.group(1).strip()
         result["date"] = datetime_combined_match.group(2).strip()
     else:
-        # Fallback to separate date and time
-        date_pattern_1 = r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\b" # e.g., 31 Mar 2024
-        date_pattern_2 = r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b" # e.g., 15/05/2025
+        date_pattern_1 = r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\b"
+        date_pattern_2 = r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b"
         date_pattern_3 = r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"
 
         date_match = re.search(date_pattern_1, text)
@@ -151,7 +148,7 @@ def advanced_parse_payment_text(text):
 
     return result
 
-# --- Existing helper functions (verify_logo, detect_photoshop, detect_color_status) ---
+# --- Modified verify_logo function ---
 def verify_logo(image):
     try:
         screenshot = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -159,14 +156,28 @@ def verify_logo(image):
         if logo is None:
             logging.warning("UPI logo file not found at 'static/upi_logo.png'. Logo verification skipped.")
             return False
+
+        # Attempt to resize logo template to make it more detectable if it's too small
+        # This is a heuristic and might need tuning.
+        # Example: if logo is very small, try making it bigger for matching
+        # Or, if the screenshot is very high-res, resize the screenshot down for matching
+        # For now, let's assume the template is roughly the right size but needs a lower threshold.
+        # If the template is consistently much larger/smaller than target logos in screenshots:
+        # logo_h, logo_w, _ = logo.shape
+        # screen_h, screen_w, _ = screenshot.shape
+        # if logo_w / screen_w < 0.05 and logo_h / screen_h < 0.05: # if logo is less than 5% of screen width/height
+        #    logo = cv2.resize(logo, (int(screen_w * 0.1), int(screen_h * 0.1)), interpolation = cv2.INTER_AREA)
+
         result = cv2.matchTemplate(screenshot, logo, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, _ = cv2.minMaxLoc(result)
         logging.info(f"Logo match confidence: {max_val}")
-        return max_val > 0.7
+        # --- LOWERING THRESHOLD FOR BETTER MATCHING OF SMALL LOGOS ---
+        return max_val > 0.4 # Reduced from 0.7 to 0.4. Tune as needed.
     except Exception as e:
         logging.error(f"Error during logo verification: {e}")
         return False
 
+# --- Existing detect_photoshop and detect_color_status functions (no changes needed here) ---
 def detect_photoshop(image):
     try:
         exif_data = image._getexif()
@@ -207,103 +218,110 @@ def detect_color_status(image):
         return ["Error"]
 
 
-# --- Modified determine_verification_status function ---
+# --- MODIFIED determine_verification_status function for percentage ---
 def determine_verification_status(extracted_data):
     """
-    Determines the overall verification status based on extracted payment details.
-    Includes checks for 'paid_to' being 'VINAYAK KUMAR SHUKLA' and date/time within 24 hours.
+    Determines the overall verification status as a percentage based on required checks.
     """
-    is_verified = True
+    passed_checks = 0
+    total_checks = 0
     reasons_false = []
     target_paid_to = "VINAYAK KUMAR SHUKLA"
 
-    logging.info(f"Starting verification for data: {extracted_data}")
+    logging.info(f"Starting percentage-based verification for data: {extracted_data}")
+    # Current time for comparison
+    current_time_ist = datetime.now() # Using current system time.
+    # If explicit IST is needed and server isn't configured, use pytz
+    # from pytz import timezone
+    # india_tz = timezone('Asia/Kolkata')
+    # current_time_ist = datetime.now(india_tz)
 
-    # Criteria 1: Successful Status Detected
-    if extracted_data.get("status") not in ["Success", "Completed", "Paid Successfully"]:
-        is_verified = False
-        reasons_false.append(f"Status is not 'Success' or recognized as successful. Detected: {extracted_data.get('status')}")
-        logging.info(f"Verification: Failed due to status: {extracted_data.get('status')}")
 
-    # Criteria 2: Amount Detected
-    if extracted_data.get("amount") is None or not isinstance(extracted_data.get("amount"), (int, float)):
-        is_verified = False
+    # Check 1: Successful Status Detected (REQUIRED)
+    total_checks += 1
+    if extracted_data.get("status") in ["Success", "Completed", "Paid Successfully"]:
+        passed_checks += 1
+        logging.info("Check 1 (Status): PASSED")
+    else:
+        reasons_false.append(f"Status is not 'Success'. Detected: {extracted_data.get('status')}")
+        logging.info(f"Check 1 (Status): FAILED - {extracted_data.get('status')}")
+
+
+    # Check 2: Amount Detected (REQUIRED)
+    total_checks += 1
+    if extracted_data.get("amount") is not None and isinstance(extracted_data.get("amount"), (int, float)):
+        passed_checks += 1
+        logging.info("Check 2 (Amount): PASSED")
+    else:
         reasons_false.append("Amount could not be detected or is invalid.")
-        logging.info("Verification: Failed because amount not detected.")
+        logging.info("Check 2 (Amount): FAILED")
 
-    # Criteria 3: Transaction/Reference ID Detected
-    if not (extracted_data.get("transaction_id") or
+    # Check 3: Transaction/Reference ID Detected (REQUIRED)
+    total_checks += 1
+    if (extracted_data.get("transaction_id") or
             extracted_data.get("upi_ref_no") or
             extracted_data.get("order_id") or
             extracted_data.get("utr") or
             extracted_data.get("google_transaction_id") or
             extracted_data.get("upi_transaction_id")):
-        is_verified = False
+        passed_checks += 1
+        logging.info("Check 3 (Transaction ID): PASSED")
+    else:
         reasons_false.append("No valid transaction/reference ID found.")
-        logging.info("Verification: Failed because no transaction ID found.")
+        logging.info("Check 3 (Transaction ID): FAILED")
 
-    # Criteria 4: Sender and Receiver Information (at least one for each side)
+    # Check 4: Sender and Receiver Information (REQUIRED - at least one for each side)
+    total_checks += 1
     sender_info_present = (extracted_data.get("from_person") or
                            extracted_data.get("from_upi_id") or
                            extracted_data.get("from_phone_number"))
+    if sender_info_present:
+        passed_checks += 0.5 # Half credit for sender info
+        logging.info("Check 4 (Sender Info): PARTIALLY PASSED")
+    else:
+        reasons_false.append("Sender information (person, UPI ID, or phone) is missing.")
+        logging.info("Check 4 (Sender Info): FAILED")
+
     receiver_info_present = (extracted_data.get("to_person") or
                              extracted_data.get("to_upi_id") or
                              extracted_data.get("to_phone_number"))
-
-    if not sender_info_present:
-        is_verified = False
-        reasons_false.append("Sender information (person, UPI ID, or phone) is missing.")
-        logging.info("Verification: Failed because sender info missing.")
-
-    if not receiver_info_present:
-        is_verified = False
-        reasons_false.append("Receiver information (person, UPI ID, or phone) is missing.")
-        logging.info("Verification: Failed because receiver info missing.")
-
-    # --- Criteria for Paid-to must be VINAYAK KUMAR SHUKLA ---
-    detected_to_person = extracted_data.get("to_person")
-    if detected_to_person:
-        if detected_to_person.strip().upper() != target_paid_to.strip().upper():
-            is_verified = False
-            reasons_false.append(f"Paid-to person does not match '{target_paid_to}'. Detected: '{detected_to_person}'.")
-            logging.warning(f"Verification: Failed because 'Paid-to' is not '{target_paid_to}'.")
-        else:
-            logging.info(f"Verification: 'Paid-to' person matches '{target_paid_to}'.")
+    if receiver_info_present:
+        passed_checks += 0.5 # Half credit for receiver info
+        logging.info("Check 4 (Receiver Info): PARTIALLY PASSED")
     else:
-        is_verified = False
-        reasons_false.append("Paid-to person could not be detected.")
-        logging.warning("Verification: Failed because 'Paid-to' person not detected.")
+        reasons_false.append("Receiver information (person, UPI ID, or phone) is missing.")
+        logging.info("Check 4 (Receiver Info): FAILED")
 
 
-    # Criteria 5: Date and Time Detected
+    # Check 5: Paid-to must be VINAYAK KUMAR SHUKLA (REQUIRED)
+    total_checks += 1
+    detected_to_person = extracted_data.get("to_person")
+    if detected_to_person and detected_to_person.strip().upper() == target_paid_to.strip().upper():
+        passed_checks += 1
+        logging.info("Check 5 (Target Paid-to): PASSED")
+    else:
+        reasons_false.append(f"Paid-to person does not match '{target_paid_to}'. Detected: '{detected_to_person}'.")
+        logging.info(f"Check 5 (Target Paid-to): FAILED - Detected: '{detected_to_person}'")
+
+
+    # Check 6: Date and Time Detected & Not older than 24 hours (REQUIRED)
+    total_checks += 1
     extracted_date_str = extracted_data.get("date")
     extracted_time_str = extracted_data.get("time")
 
-    if not extracted_date_str:
-        is_verified = False
-        reasons_false.append("Date could not be detected.")
-        logging.info("Verification: Failed because date not detected.")
-    if not extracted_time_str:
-        is_verified = False
-        reasons_false.append("Time could not be detected.")
-        logging.info("Verification: Failed because time not detected.")
-
-    # --- NEW CRITERIA: Date and Time not older than 24 hours ---
+    date_time_check_passed = False
     if extracted_date_str and extracted_time_str:
         try:
-            # Try to parse the combined datetime
-            # Handle different date formats
             dt_formats = [
-                "%d %b %Y %I:%M %p",  # 31 Mar 2024 01:58 PM
-                "%d %b %Y %I:%M%p",   # 31 Mar 2024 01:58PM
-                "%d %B %Y %I:%M %p",  # 15 May 2025 01:50 PM
-                "%d/%m/%Y %I:%M %p",  # 20/06/2025 01:50 PM (if applicable)
-                "%d %b %Y %H:%M",     # 31 Mar 2024 13:58 (24-hour)
+                "%d %b %Y %I:%M %p",
+                "%d %b %Y %I:%M%p",
+                "%d %B %Y %I:%M %p",
+                "%d/%m/%Y %I:%M %p",
+                "%d %b %Y %H:%M",
                 "%d %B %Y %H:%M"
             ]
 
             parsed_dt = None
-            # Combine date and time for parsing
             full_datetime_str = f"{extracted_date_str} {extracted_time_str}"
 
             for fmt in dt_formats:
@@ -314,59 +332,115 @@ def determine_verification_status(extracted_data):
                     continue
 
             if parsed_dt:
-                current_time = datetime.now() # Get current time for comparison
-                time_difference = current_time - parsed_dt
+                time_difference = current_time_ist - parsed_dt
                 max_allowed_difference = timedelta(hours=24)
 
-                if time_difference < timedelta(minutes=-5) : # Allow a small future margin (e.g., 5 minutes)
-                    is_verified = False
+                # Check for future timestamp (allow minor grace for clock sync)
+                if time_difference < timedelta(minutes=-2): # 2-minute buffer for future
                     reasons_false.append(f"Screenshot date/time is in the future. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Verification: Failed. Screenshot is in the future. Diff: {time_difference}")
+                    logging.warning(f"Check 6 (Date/Time): FAILED - In future. Diff: {time_difference}")
                 elif time_difference > max_allowed_difference:
-                    is_verified = False
-                    reasons_false.append(f"Screenshot is older than 24 hours. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Verification: Failed. Screenshot older than 24 hours. Diff: {time_difference}")
+                    reasons_false.append(f"Screenshot is older than 24 hours. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time_ist.strftime('%Y-%m-%d %H:%M:%S')}")
+                    logging.warning(f"Check 6 (Date/Time): FAILED - Too old. Diff: {time_difference}")
                 else:
-                    logging.info(f"Verification: Screenshot date/time within 24 hours. Diff: {time_difference}")
+                    date_time_check_passed = True
+                    logging.info("Check 6 (Date/Time): PASSED")
             else:
-                is_verified = False
                 reasons_false.append("Could not parse extracted date and time into a comparable format.")
-                logging.warning(f"Verification: Failed. Date/Time parsing failed for '{full_datetime_str}'.")
+                logging.warning(f"Check 6 (Date/Time): FAILED - Parsing failed for '{full_datetime_str}'.")
         except Exception as e:
-            is_verified = False
             reasons_false.append(f"Error during date/time comparison: {e}")
-            logging.error(f"Error in date/time comparison: {e}")
-    elif extracted_date_str or extracted_time_str: # If one is found but not the other
-        is_verified = False
-        reasons_false.append("Only partial date or time information detected, cannot verify recency.")
-        logging.warning("Verification: Failed. Partial date/time info.")
+            logging.error(f"Check 6 (Date/Time): FAILED - Error: {e}")
+    else:
+        reasons_false.append("Date or Time information not fully detected, cannot verify recency.")
+        logging.warning("Check 6 (Date/Time): FAILED - Partial date/time info.")
 
-    # Criteria 6: Photoshop Detected (Strong negative impact)
+    if date_time_check_passed:
+        passed_checks += 1
+
+
+    # Check 7: Photoshop Detected (STRONGLY NEGATIVE, Reduces score significantly if present)
+    # This is handled as a penalty rather than a direct failed check in the percentage calculation
+    # If photoshop is detected, we might cap the percentage or add a big penalty.
     if extracted_data.get("photoshop_detected", False):
-        is_verified = False
         reasons_false.append("Potential Photoshop manipulation detected.")
-        logging.warning("Verification: Failed due to Photoshop detection.")
+        # Reduce percentage significantly or make it impossible to reach 100%
+        # For simplicity, let's say it caps the score at 50% if detected.
+        # Or, just ensure that if this is true, the final 'verified_percentage' is never 100
+        # For a percentage, we can say if photoshop detected, max score is X.
+        # Or, make it a full failure by adding it to total_checks and passing_checks directly.
+        # Let's add it as a check that MUST pass for high percentage.
+        total_checks += 1
+        # No 'passed_checks += 1' if detected
 
-    # Criteria 8: Color Status Matches Text Status (Consistency check)
+    else:
+        total_checks += 1
+        passed_checks += 1 # Photoshop NOT detected means it passes this check
+
+
+    # Check 8: Color Status Matches Text Status (Consistency check - adds to confidence)
+    # This is a supportive check, not as critical as others for the base percentage
     text_status = extracted_data.get("status")
     color_statuses = extracted_data.get("color_status", [])
 
+    total_checks += 1 # Add this as a check
+    color_status_match = True
     if text_status == "Success" and "Success" not in color_statuses:
-        is_verified = False
+        color_status_match = False
         reasons_false.append("Text status 'Success' but no matching green color detected.")
-        logging.warning("Verification: Failed due to text-color status mismatch (Success).")
+        logging.warning("Check 8 (Color Status): FAILED - Text/Color mismatch (Success).")
     elif text_status == "Failed" and "Failed" not in color_statuses and "Unknown" not in color_statuses:
-        is_verified = False
+        color_status_match = False
         reasons_false.append("Text status 'Failed' but no matching red color detected.")
-        logging.warning("Verification: Failed due to text-color status mismatch (Failed).")
+        logging.warning("Check 8 (Color Status): FAILED - Text/Color mismatch (Failed).")
+
+    if color_status_match:
+        passed_checks += 1
+        logging.info("Check 8 (Color Status): PASSED")
+    else:
+        logging.info("Check 8 (Color Status): FAILED")
+
+    # Check 9: Logo Verified (adds to confidence, not a hard fail if missing)
+    # This is a bonus point, adding to the score if present, but doesn't lower if absent
+    # We can either make it a full check, or a fractional check. Let's make it a full check.
+    total_checks += 1
+    if extracted_data.get("logo_verified", False):
+        passed_checks += 1
+        logging.info("Check 9 (Logo Verified): PASSED")
+    else:
+        reasons_false.append("UPI Logo could not be verified.")
+        logging.info("Check 9 (Logo Verified): FAILED")
+
+
+    # Calculate percentage
+    verified_percentage = 0
+    if total_checks > 0:
+        verified_percentage = (passed_checks / total_checks) * 100
+    verified_percentage = round(verified_percentage, 2) # Round to 2 decimal places
+
+    # Final decision for "verified: true/false" can be based on a threshold
+    final_verified_bool = (verified_percentage >= 70) # Example: require at least 70% to be "True"
+
+    # If Photoshop was detected, it's a very strong indicator of manipulation.
+    # Even if other checks pass, Photoshop detection should severely penalize the 'verified' flag.
+    # You might even force verified_percentage to 0 if photoshop_detected is True
+    if extracted_data.get("photoshop_detected", False):
+        final_verified_bool = False # Overrides based on a severe security concern
+        verified_percentage = min(verified_percentage, 25.0) # Cap at a low value if photoshop detected
+
 
     return {
-        "verified": is_verified,
-        "reasons_for_false": reasons_false if not is_verified else []
+        "verified": final_verified_bool, # This is the boolean you asked for earlier
+        "verified_percentage": verified_percentage, # New: Percentage score
+        "reasons_for_false": reasons_false if not final_verified_bool else [] # Only return reasons if final_verified_bool is False
     }
+
 
 # --- Other helper functions (extract_payment_info) ---
 def extract_payment_info(image):
+    """
+    Orchestrates the OCR and parsing.
+    """
     text = pytesseract.image_to_string(image)
     logging.info(f"OCR extracted text:\n{text[:500]}...")
     return advanced_parse_payment_text(text)

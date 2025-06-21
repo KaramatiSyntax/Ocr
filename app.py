@@ -5,14 +5,12 @@ from utils.verifier import (
     verify_logo,
     detect_photoshop,
     detect_color_status,
-    determine_verification_status # Import the new function
+    determine_verification_status
 )
 from PIL import Image
 import logging
 
-# Configure logging for app.py as well if needed
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 
 app = Flask(__name__)
 CORS(app, origins=["https://turraniesports.vercel.app", "http://localhost:3000"])
@@ -31,25 +29,24 @@ def verify_payment():
     try:
         image = Image.open(file.stream)
 
-        # 1. Extract raw payment information
         result = extract_payment_info(image)
-
-        # 2. Perform image-based checks
         result['logo_verified'] = verify_logo(image)
         result['photoshop_detected'] = detect_photoshop(image)
         result['color_status'] = detect_color_status(image)
 
-        # 3. Determine overall verification status
         verification_output = determine_verification_status(result)
+
+        # Update the main result dictionary with verification details
         result['verified'] = verification_output['verified']
-        if not result['verified']:
+        result['verified_percentage'] = verification_output['verified_percentage'] # Add percentage
+        if not result['verified']: # Only include reasons if the boolean 'verified' is False
             result['reasons_for_false'] = verification_output['reasons_for_false']
 
-        logging.info(f"Verification process completed. Verified: {result['verified']}")
+        logging.info(f"Verification process completed. Verified (bool): {result['verified']}, Percentage: {result['verified_percentage']}%")
         return jsonify(result)
 
     except Exception as e:
-        logging.exception("Failed to process image") # Logs the full traceback
+        logging.exception("Failed to process image")
         return jsonify({'error': 'Failed to process image', 'details': str(e)}), 500
 
 if __name__ == '__main__':
