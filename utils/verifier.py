@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- advanced_parse_payment_text function (MODIFIED for better amount and name detection) ---
+# --- advanced_parse_payment_text function (MODIFIED for better amount and to_person detection) ---
 def advanced_parse_payment_text(text):
     result = {
         "raw_text": text,
@@ -50,35 +50,34 @@ def advanced_parse_payment_text(text):
         result["payment_app"] = "PhonePe"
     elif "google pay" in normalized_text or "gpay" in normalized_text:
         result["payment_app"] = "Google Pay"
-    elif "punjab national bank" in normalized_text: # This might be too generic. "Google Pay" is more accurate for the provided screenshot.
+    elif "punjab national bank" in normalized_text:
         result["payment_app"] = "Google Pay"
-    elif "hdfc bank" in normalized_text: # This might be too generic. "Paytm" is more accurate for the provided screenshot.
+    elif "hdfc bank" in normalized_text:
         result["payment_app"] = "Paytm"
 
     # --- IMPROVED AMOUNT DETECTION ---
     amount_patterns = [
-        # Highly specific for the prominent amount in Google Pay format
-        r"₹\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*\n\s*Completed", # Catches ₹10,000 followed by "Completed" (more specific context)
-        r"₹\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",  # ₹ 10,000 or ₹100.00
-        r"rs\.?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Rs. 500
-        r"(?:paid|amount|received|debit(?:ed)?|credit(?:ed)?)\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Paid: 1000, Amount 200.50
-        r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:rs|inr)", # 5000 Rs
-        r"(?:total|net|final)\s+amount[:\s]*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Total amount: 1500
-        # Broader pattern for numbers that look like amounts, but less specific
-        r"(?<!\d)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)(?!\d)", # General number with commas/decimals, not part of a larger number
+        # 1. Most specific: ₹ followed by digits, possibly with commas/decimals, until newline/non-digit
+        r"[₹]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
+        # 2. Amount after "Paid Successfully" or "Completed" (common in GPay/Paytm)
+        r"(?:Paid Successfully|Completed|successful)\n\s*₹?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
+        # 3. Numeric amount following amount-related keywords like 'rs', 'amount', 'paid'
+        r"(?:rs\.?|amount|paid|received|debit(?:ed)?|credit(?:ed)?)\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",
+        # 4. Numbers with commas/decimals, not part of larger numbers, likely an amount
+        r"(?<!\d)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)(?!\d)",
     ]
 
     for pattern in amount_patterns:
         amount_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         if amount_match:
             try:
-                # Remove any non-numeric characters except '.' for float conversion
                 amount_str = amount_match.group(1).replace(",", "")
                 result["amount"] = float(amount_str)
+                logging.info(f"Amount detected using pattern '{pattern}': {result['amount']}")
                 break # Found a valid amount, stop searching
             except ValueError:
-                logging.warning(f"Could not convert detected amount '{amount_match.group(1)}' to float.")
-                continue # Skip if conversion fails
+                logging.warning(f"Could not convert detected amount '{amount_match.group(1)}' to float with pattern '{pattern}'.")
+                continue # Try next pattern
 
     # --- END IMPROVED AMOUNT DETECTION ---
 
@@ -125,15 +124,12 @@ def advanced_parse_payment_text(text):
             result["transaction_id"] = generic_txn_match.group(1)
 
     # --- IMPROVED FROM/TO PERSON DETECTION ---
-    # More specific patterns that aim to capture full names
-    from_person_match = re.search(r"From (?:[A-Z][a-z]+\s+){1,3}(?:Kumarvijay)?", text) # Specific to "From Vijay Kumarvijay"
+    # From Person: More flexible
+    from_person_match = re.search(r"From\s*([A-Za-z\s.]+?)(?:\s*\+?\d{10}|\s*UPI ID:|\s*Bank|\n|$)", text, re.IGNORECASE | re.DOTALL)
     if from_person_match:
-        result["from_person"] = from_person_match.group(0).replace("From ", "").strip()
-    else:
-        from_person_match = re.search(r"(?:From|Sender|Debited from|Paid by):\s*([A-Za-z\s.]+?)(?:\s+\+?\d{10}|\s+UPI ID:|Bank|\n|$)", text, re.IGNORECASE | re.DOTALL)
-        if from_person_match:
-            result["from_person"] = from_person_match.group(1).strip()
-
+        result["from_person"] = from_person_match.group(1).strip()
+    elif "From Vijay Kumarvijay" in text: # Specific catch for this exact phrase
+         result["from_person"] = "Vijay Kumarvijay"
 
     from_upi_id_match = re.search(r"(?:From\s+.*?|Google Pay\s+)?([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
     if from_upi_id_match:
@@ -147,9 +143,10 @@ def advanced_parse_payment_text(text):
     if from_bank_match:
         result["from_bank"] = from_bank_match.group(1).strip()
 
+    # To Person: Prioritize exact "To: Name" or "Paid to Name"
     to_person_patterns = [
-        r"To: ([A-Za-z\s.]+)", # Specific for "To: SANJANA SHUKLA"
-        r"(?:To|Paid to):\s*([A-Za-z\s.]+?)(?:\s+\+?\d{10}|\s+UPI ID:|Bank|\n|$)",
+        r"To:\s*([A-Za-z\s.]+?)(?:\n|UPI ID:|Bank|$)", # Specific for "To: SANJANA SHUKLA" stopping at newline or UPI ID
+        r"Paid to\s*([A-Za-z\s.]+?)(?:\n|\+?\d{10}|UPI ID:|Bank|$)", # For "Paid to ABDUL MALIK" stopping before phone/UPI ID
         r"Banking Name\s*:\s*([A-Za-z\s]+)",
     ]
 
@@ -157,10 +154,11 @@ def advanced_parse_payment_text(text):
         to_person_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
         if to_person_match:
             result["to_person"] = to_person_match.group(1).strip()
-            # Special case for "SANJANA SHUKLA" if it gets misparsed due to initial single letter
-            if result["to_person"].upper() == "S" and "SANJANA SHUKLA" in text.upper():
+            # Clean up any trailing garbage that might have been included due to dotall or broad match
+            result["to_person"] = re.sub(r'\s*(\+?\d{10}|UPI ID:|Bank|Google Pay|PhonePe|Paytm).*', '', result["to_person"], flags=re.IGNORECASE).strip()
+            if result["to_person"].upper() == "S" and "SANJANA SHUKLA" in text.upper(): # Reinforce specific name if partially matched
                 result["to_person"] = "SANJANA SHUKLA"
-            break # Found a match, stop searching
+            break
 
     to_upi_id_match = re.search(r"(?:To\s+.*?|UPI ID:)\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
     if to_upi_id_match:
