@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- advanced_parse_payment_text function (no changes needed here) ---
+# --- advanced_parse_payment_text function (MODIFIED for better amount detection) ---
 def advanced_parse_payment_text(text):
     result = {
         "raw_text": text,
@@ -55,13 +55,26 @@ def advanced_parse_payment_text(text):
     elif "hdfc bank" in normalized_text:
         result["payment_app"] = "Paytm"
 
-    amount_match = re.search(r"₹\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", text)
-    if amount_match:
-        result["amount"] = float(amount_match.group(1).replace(",", ""))
-    else:
-        amount_keyword_match = re.search(r"(?:paid|amount|received)\s+.*?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", text, re.IGNORECASE | re.DOTALL)
-        if amount_keyword_match:
-            result["amount"] = float(amount_keyword_match.group(1).replace(",", ""))
+    # --- MODIFIED AMOUNT DETECTION ---
+    amount_patterns = [
+        r"₹\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)",  # ₹ 10,000 or ₹100.00
+        r"rs\.?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Rs. 500
+        r"(?:paid|amount|received|debit(?:ed)?|credit(?:ed)?)\s*:?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Paid: 1000, Amount 200.50
+        r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:rs|inr)", # 5000 Rs
+        r"(?:total|net|final)\s+amount[:\s]*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)", # Total amount: 1500
+        r"(?:[\s\n\r]|^)(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)(?=\s*(?:successfully|completed|paid|received|debited|credited|from|to|on|at|\n|$))" # Standalone number that looks like an amount
+    ]
+
+    for pattern in amount_patterns:
+        amount_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if amount_match:
+            try:
+                result["amount"] = float(amount_match.group(1).replace(",", ""))
+                break # Found a valid amount, stop searching
+            except ValueError:
+                continue # Skip if conversion fails (shouldn't happen with this regex but good for safety)
+
+    # --- END MODIFIED AMOUNT DETECTION ---
 
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
@@ -147,7 +160,7 @@ def advanced_parse_payment_text(text):
 
     return result
 
-# --- ONLY KEEPING detect_photoshop function ---
+# --- ONLY KEEPING detect_photoshop function (no changes) ---
 def detect_photoshop(image):
     try:
         exif_data = image._getexif()
@@ -168,7 +181,7 @@ def detect_photoshop(image):
         return False
 
 
-# --- MODIFIED determine_verification_status function for exactly 6 checks ---
+# --- determine_verification_status function (no changes, already has 6 checks) ---
 def determine_verification_status(extracted_data):
     """
     Determines the overall verification status as a percentage based on exactly 6 required checks.
@@ -176,7 +189,7 @@ def determine_verification_status(extracted_data):
     passed_checks = 0
     total_checks = 0
     reasons_false = []
-    target_paid_to = "VINAYAK KUMAR SHUKLA"
+    target_paid_to = "VINAYAK KUMAR SHUKLA" # Make sure this matches the expected name in the database/system
 
     logging.info(f"Starting 6-check verification for data: {extracted_data}")
     current_time_ist = datetime.now()
@@ -201,7 +214,7 @@ def determine_verification_status(extracted_data):
         reasons_false.append("Amount could not be detected or is invalid.")
         logging.info("Check 2 (Amount): FAILED")
 
-    # --- NEW Check 3: Transaction ID Detected (required) ---
+    # Check 3: Transaction ID Detected (required)
     total_checks += 1
     if (extracted_data.get("transaction_id") or
             extracted_data.get("upi_ref_no") or
