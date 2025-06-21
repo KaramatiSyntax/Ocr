@@ -93,7 +93,6 @@ def advanced_parse_payment_text(text):
     else:
         logging.warning("No valid amount detected using enhanced logic.")
     # --- END ENHANCED AMOUNT DETECTION BLOCK ---
---
 
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
