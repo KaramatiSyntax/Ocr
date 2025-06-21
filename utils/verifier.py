@@ -55,31 +55,30 @@ def advanced_parse_payment_text(text):
     elif "hdfc bank" in normalized_text:
         result["payment_app"] = "Paytm"
 
-      # --- UPGRADED ₹-FOCUSED AMOUNT DETECTION BLOCK ---
-cleaned_text = text.replace(",", "").replace("INR", "₹").replace("Rs.", "₹").replace("Rs", "₹")
-possible_amounts = []
+     # --- UPGRADED ₹-FOCUSED AMOUNT DETECTION BLOCK ---
+    cleaned_text = text.replace(",", "").replace("INR", "₹").replace("Rs.", "₹").replace("Rs", "₹")
+    possible_amounts = []
 
-# Match values after ₹ or similar patterns
-amount_patterns = [
-    r"[₹]\s*([0-9]{2,7}(?:\.\d{1,2})?)",                  # ₹10000 or ₹ 10000.00
-    r"(?i)(?:amount|paid|debited|credited|received)\s*[:\-]?\s*₹?\s*([0-9]{2,7}(?:\.\d{1,2})?)",
-]
+    amount_patterns = [
+        r"[₹]\s*([0-9]{2,7}(?:\.\d{1,2})?)",
+        r"(?i)(?:amount|paid|debited|credited|received)\s*[:\-]?\s*₹?\s*([0-9]{2,7}(?:\.\d{1,2})?)",
+    ]
 
-for pattern in amount_patterns:
-    for match in re.findall(pattern, cleaned_text, flags=re.IGNORECASE):
-        try:
-            amt = float(match)
-            if 10 <= amt <= 100000:  # sensible payment range
-                possible_amounts.append(amt)
-        except:
-            continue
+    for pattern in amount_patterns:
+        for match in re.findall(pattern, cleaned_text, flags=re.IGNORECASE):
+            try:
+                amt = float(match)
+                if 10 <= amt <= 100000:
+                    possible_amounts.append(amt)
+            except:
+                continue
 
-if possible_amounts:
-    result["amount"] = max(possible_amounts)
-    logging.info(f"Amount detected (₹ logic): {result['amount']}")
-else:
-    logging.warning("No valid amount detected using ₹-based logic.")
-# --- END BLOCK ---
+    if possible_amounts:
+        result["amount"] = max(possible_amounts)
+        logging.info(f"Amount detected (₹ logic): {result['amount']}")
+    else:
+        logging.warning("No valid amount detected using ₹-based logic.")
+    # --- END BLOCK ---
 
 
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
