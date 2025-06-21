@@ -1,9 +1,9 @@
 import pytesseract
 import re
 import numpy as np
-import cv2
+import cv2 # Still needed for image processing, even if logo/color are removed
 from PIL import Image
-from PIL.ExifTags import TAGS
+from PIL.ExifTags import TAGS # Still needed for photoshop detection
 import logging
 from datetime import datetime, timedelta
 
@@ -63,7 +63,6 @@ def advanced_parse_payment_text(text):
         if amount_keyword_match:
             result["amount"] = float(amount_keyword_match.group(1).replace(",", ""))
 
-    # --- Improved Date and Time Extraction for better parsing ---
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
         result["time"] = datetime_combined_match.group(1).strip()
@@ -148,37 +147,20 @@ def advanced_parse_payment_text(text):
 
     return result
 
-# --- Modified verify_logo function ---
-def verify_logo(image):
-    try:
-        screenshot = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        logo = cv2.imread('static/upi_logo.png')
-        if logo is None:
-            logging.warning("UPI logo file not found at 'static/upi_logo.png'. Logo verification skipped.")
-            return False
+# --- REMOVED verify_logo function ---
+# def verify_logo(image):
+#     # ... (function content was here)
+#     pass # Placeholder to indicate removal
 
-        # Attempt to resize logo template to make it more detectable if it's too small
-        # This is a heuristic and might need tuning.
-        # Example: if logo is very small, try making it bigger for matching
-        # Or, if the screenshot is very high-res, resize the screenshot down for matching
-        # For now, let's assume the template is roughly the right size but needs a lower threshold.
-        # If the template is consistently much larger/smaller than target logos in screenshots:
-        # logo_h, logo_w, _ = logo.shape
-        # screen_h, screen_w, _ = screenshot.shape
-        # if logo_w / screen_w < 0.05 and logo_h / screen_h < 0.05: # if logo is less than 5% of screen width/height
-        #    logo = cv2.resize(logo, (int(screen_w * 0.1), int(screen_h * 0.1)), interpolation = cv2.INTER_AREA)
 
-        result = cv2.matchTemplate(screenshot, logo, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, _ = cv2.minMaxLoc(result)
-        logging.info(f"Logo match confidence: {max_val}")
-        # --- LOWERING THRESHOLD FOR BETTER MATCHING OF SMALL LOGOS ---
-        return max_val > 0.4 # Reduced from 0.7 to 0.4. Tune as needed.
-    except Exception as e:
-        logging.error(f"Error during logo verification: {e}")
-        return False
+# --- REMOVED detect_color_status function ---
+# def detect_color_status(image):
+#     # ... (function content was here)
+#     pass # Placeholder to indicate removal
 
-# --- Existing detect_photoshop and detect_color_status functions (no changes needed here) ---
+
 def detect_photoshop(image):
+    # This function is still kept as it's a general image integrity check
     try:
         exif_data = image._getexif()
         if not exif_data:
@@ -197,31 +179,12 @@ def detect_photoshop(image):
         logging.error(f"Error during Photoshop detection: {e}")
         return False
 
-def detect_color_status(image):
-    try:
-        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        img_hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-        color_ranges = {
-            "Success": ((40, 50, 50), (80, 255, 255)),
-            "Failed": ((0, 100, 100), (10, 255, 255)),
-            "Pending": ((20, 100, 100), (40, 255, 255))
-        }
-        detected = []
-        for status, (lower, upper) in color_ranges.items():
-            mask = cv2.inRange(img_hsv, np.array(lower), np.array(upper))
-            coverage = cv2.countNonZero(mask) / (img_hsv.shape[0] * img_hsv.shape[1])
-            if coverage > 0.001:
-                detected.append(status)
-        return detected or ["Unknown"]
-    except Exception as e:
-        logging.error(f"Error during color status detection: {e}")
-        return ["Error"]
 
-
-# --- MODIFIED determine_verification_status function for percentage ---
+# --- MODIFIED determine_verification_status function for percentage (without logo and color) ---
 def determine_verification_status(extracted_data):
     """
     Determines the overall verification status as a percentage based on required checks.
+    Removed color detection and logo verification as per user request.
     """
     passed_checks = 0
     total_checks = 0
@@ -229,12 +192,7 @@ def determine_verification_status(extracted_data):
     target_paid_to = "VINAYAK KUMAR SHUKLA"
 
     logging.info(f"Starting percentage-based verification for data: {extracted_data}")
-    # Current time for comparison
-    current_time_ist = datetime.now() # Using current system time.
-    # If explicit IST is needed and server isn't configured, use pytz
-    # from pytz import timezone
-    # india_tz = timezone('Asia/Kolkata')
-    # current_time_ist = datetime.now(india_tz)
+    current_time_ist = datetime.now()
 
 
     # Check 1: Successful Status Detected (REQUIRED)
@@ -336,7 +294,7 @@ def determine_verification_status(extracted_data):
                 max_allowed_difference = timedelta(hours=24)
 
                 # Check for future timestamp (allow minor grace for clock sync)
-                if time_difference < timedelta(minutes=-2): # 2-minute buffer for future
+                if time_difference < timedelta(minutes=-2):
                     reasons_false.append(f"Screenshot date/time is in the future. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}")
                     logging.warning(f"Check 6 (Date/Time): FAILED - In future. Diff: {time_difference}")
                 elif time_difference > max_allowed_difference:
@@ -359,58 +317,18 @@ def determine_verification_status(extracted_data):
         passed_checks += 1
 
 
-    # Check 7: Photoshop Detected (STRONGLY NEGATIVE, Reduces score significantly if present)
-    # This is handled as a penalty rather than a direct failed check in the percentage calculation
-    # If photoshop is detected, we might cap the percentage or add a big penalty.
+    # Check 7: Photoshop Detected (STRONGLY NEGATIVE)
+    total_checks += 1 # This is still a critical check
     if extracted_data.get("photoshop_detected", False):
         reasons_false.append("Potential Photoshop manipulation detected.")
-        # Reduce percentage significantly or make it impossible to reach 100%
-        # For simplicity, let's say it caps the score at 50% if detected.
-        # Or, just ensure that if this is true, the final 'verified_percentage' is never 100
-        # For a percentage, we can say if photoshop detected, max score is X.
-        # Or, make it a full failure by adding it to total_checks and passing_checks directly.
-        # Let's add it as a check that MUST pass for high percentage.
-        total_checks += 1
-        # No 'passed_checks += 1' if detected
-
+        # If photoshop is detected, this check fails. No 'passed_checks += 1'
+        logging.warning("Check 7 (Photoshop): FAILED - Manipulation detected.")
     else:
-        total_checks += 1
         passed_checks += 1 # Photoshop NOT detected means it passes this check
+        logging.info("Check 7 (Photoshop): PASSED")
 
-
-    # Check 8: Color Status Matches Text Status (Consistency check - adds to confidence)
-    # This is a supportive check, not as critical as others for the base percentage
-    text_status = extracted_data.get("status")
-    color_statuses = extracted_data.get("color_status", [])
-
-    total_checks += 1 # Add this as a check
-    color_status_match = True
-    if text_status == "Success" and "Success" not in color_statuses:
-        color_status_match = False
-        reasons_false.append("Text status 'Success' but no matching green color detected.")
-        logging.warning("Check 8 (Color Status): FAILED - Text/Color mismatch (Success).")
-    elif text_status == "Failed" and "Failed" not in color_statuses and "Unknown" not in color_statuses:
-        color_status_match = False
-        reasons_false.append("Text status 'Failed' but no matching red color detected.")
-        logging.warning("Check 8 (Color Status): FAILED - Text/Color mismatch (Failed).")
-
-    if color_status_match:
-        passed_checks += 1
-        logging.info("Check 8 (Color Status): PASSED")
-    else:
-        logging.info("Check 8 (Color Status): FAILED")
-
-    # Check 9: Logo Verified (adds to confidence, not a hard fail if missing)
-    # This is a bonus point, adding to the score if present, but doesn't lower if absent
-    # We can either make it a full check, or a fractional check. Let's make it a full check.
-    total_checks += 1
-    if extracted_data.get("logo_verified", False):
-        passed_checks += 1
-        logging.info("Check 9 (Logo Verified): PASSED")
-    else:
-        reasons_false.append("UPI Logo could not be verified.")
-        logging.info("Check 9 (Logo Verified): FAILED")
-
+    # --- Removed Check 8 (Color Status) ---
+    # --- Removed Check 9 (Logo Verified) ---
 
     # Calculate percentage
     verified_percentage = 0
@@ -419,28 +337,27 @@ def determine_verification_status(extracted_data):
     verified_percentage = round(verified_percentage, 2) # Round to 2 decimal places
 
     # Final decision for "verified: true/false" can be based on a threshold
-    final_verified_bool = (verified_percentage >= 70) # Example: require at least 70% to be "True"
+    # The threshold for 'True' should be adjusted since total_checks are fewer now.
+    # We have 7 checks (Status, Amount, Txn ID, Sender/Receiver (1), Paid-To, Date/Time, Photoshop)
+    # So 7/7 = 100%. 6/7 = 85.7%, 5/7 = 71.4%, 4/7 = 57.1%
+    # A 70% threshold is still reasonable, meaning at least 5 out of 7 major checks must pass.
+    final_verified_bool = (verified_percentage >= 70)
 
-    # If Photoshop was detected, it's a very strong indicator of manipulation.
-    # Even if other checks pass, Photoshop detection should severely penalize the 'verified' flag.
-    # You might even force verified_percentage to 0 if photoshop_detected is True
+    # Overriding for severe issues like Photoshop detection
     if extracted_data.get("photoshop_detected", False):
         final_verified_bool = False # Overrides based on a severe security concern
         verified_percentage = min(verified_percentage, 25.0) # Cap at a low value if photoshop detected
 
 
     return {
-        "verified": final_verified_bool, # This is the boolean you asked for earlier
-        "verified_percentage": verified_percentage, # New: Percentage score
-        "reasons_for_false": reasons_false if not final_verified_bool else [] # Only return reasons if final_verified_bool is False
+        "verified": final_verified_bool,
+        "verified_percentage": verified_percentage,
+        "reasons_for_false": reasons_false if not final_verified_bool else []
     }
 
 
-# --- Other helper functions (extract_payment_info) ---
+# --- Helper function for OCR (no changes) ---
 def extract_payment_info(image):
-    """
-    Orchestrates the OCR and parsing.
-    """
     text = pytesseract.image_to_string(image)
     logging.info(f"OCR extracted text:\n{text[:500]}...")
     return advanced_parse_payment_text(text)
