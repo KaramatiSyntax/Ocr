@@ -55,44 +55,32 @@ def advanced_parse_payment_text(text):
     elif "hdfc bank" in normalized_text:
         result["payment_app"] = "Paytm"
 
-       # --- ENHANCED AMOUNT DETECTION BLOCK ---
-    # Normalize text for OCR quirks (e.g., ₹ = '2' or '4' etc.)
-    cleaned_text = text.replace(",", "")
-    possible_amounts = []
+      # --- UPGRADED ₹-FOCUSED AMOUNT DETECTION BLOCK ---
+cleaned_text = text.replace(",", "").replace("INR", "₹").replace("Rs.", "₹").replace("Rs", "₹")
+possible_amounts = []
 
-    # Prioritize detection of ₹, Rs., Amount, etc.
-    amount_patterns = [
-        r"[₹₹Rs|INR|Amount|Paid|Debited|Credited|received]\s*[:\-]?\s*(\d+(?:\.\d{1,2})?)",
-        r"(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?)",  # with commas
-        r"\b\d{4,7}\b",  # large numbers
-    ]
+# Match values after ₹ or similar patterns
+amount_patterns = [
+    r"[₹]\s*([0-9]{2,7}(?:\.\d{1,2})?)",                  # ₹10000 or ₹ 10000.00
+    r"(?i)(?:amount|paid|debited|credited|received)\s*[:\-]?\s*₹?\s*([0-9]{2,7}(?:\.\d{1,2})?)",
+]
 
-    for pattern in amount_patterns:
-        for match in re.findall(pattern, text, flags=re.IGNORECASE):
-            try:
-                amt = float(match.replace(",", ""))
-                if amt > 1:  # filter out invalid tiny values
-                    possible_amounts.append(amt)
-            except:
-                continue
+for pattern in amount_patterns:
+    for match in re.findall(pattern, cleaned_text, flags=re.IGNORECASE):
+        try:
+            amt = float(match)
+            if 10 <= amt <= 100000:  # sensible payment range
+                possible_amounts.append(amt)
+        except:
+            continue
 
-    if possible_amounts:
-        # Heuristic correction: Handle OCR error like "210000" (₹10000 misread)
-        corrected_amounts = []
-        for amt in possible_amounts:
-            if amt >= 100000 and str(int(amt)).startswith('2'):
-                corrected = amt - 200000 if amt == 210000 else amt % 100000
-                if corrected >= 10:
-                    corrected_amounts.append(corrected)
-            else:
-                corrected_amounts.append(amt)
+if possible_amounts:
+    result["amount"] = max(possible_amounts)
+    logging.info(f"Amount detected (₹ logic): {result['amount']}")
+else:
+    logging.warning("No valid amount detected using ₹-based logic.")
+# --- END BLOCK ---
 
-        # Use the highest plausible value assuming it's the main payment
-        result["amount"] = max(corrected_amounts)
-        logging.info(f"Amount detected (enhanced): {result['amount']}")
-    else:
-        logging.warning("No valid amount detected using enhanced logic.")
-    # --- END ENHANCED AMOUNT DETECTION BLOCK ---
 
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
