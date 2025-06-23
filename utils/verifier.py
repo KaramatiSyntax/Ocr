@@ -7,10 +7,24 @@ from PIL.ExifTags import TAGS
 import logging
 from datetime import datetime, timedelta
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- advanced_parse_payment_text function (MODIFIED for precise amount detection) ---
+# --- Preprocess image before OCR ---
+def preprocess_for_ocr(image):
+    img = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    gray = cv2.bilateralFilter(gray, 11, 17, 17)
+    _, thresh = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+    return thresh
+
+# --- Main Extraction Function ---
+def extract_payment_info(image):
+    preprocessed = preprocess_for_ocr(image)
+    text = pytesseract.image_to_string(preprocessed)
+    logging.info(f"OCR extracted text:\n{text[:500]}...")
+    return advanced_parse_payment_text(text)
+
+# --- Main Parsing Logic ---
 def advanced_parse_payment_text(text):
     result = {
         "raw_text": text,
@@ -37,317 +51,197 @@ def advanced_parse_payment_text(text):
 
     normalized_text = text.lower().replace("\n", " ")
 
-    if re.search(r"(successful|success|completed|paid successfully|transaction successful)", normalized_text):
-        result["status"] = "Success"
-    elif re.search(r"(failed|failure)", normalized_text):
-        result["status"] = "Failed"
-    elif re.search(r"(pending)", normalized_text):
-        result["status"] = "Pending"
-
-    if "paytm" in normalized_text and "@paytm" in normalized_text:
+    # --- Payment App Detection ---
+    if "paytm" in normalized_text:
         result["payment_app"] = "Paytm"
     elif "phonepe" in normalized_text or "phone pe" in normalized_text:
         result["payment_app"] = "PhonePe"
     elif "google pay" in normalized_text or "gpay" in normalized_text:
         result["payment_app"] = "Google Pay"
-    elif "punjab national bank" in normalized_text:
-        result["payment_app"] = "Google Pay"
-    elif "hdfc bank" in normalized_text:
-        result["payment_app"] = "Paytm"
 
- # --- UPGRADED ₹-FOCUSED AMOUNT DETECTION BLOCK (WITH FALLBACK) ---
+    # --- Status Detection ---
+    if re.search(r"(success|completed|complete|paid successfully|transaction successful|you paid|payment done)", normalized_text):
+        result["status"] = "Success"
+    elif re.search(r"(failed|failure|declined|cancelled)", normalized_text):
+        result["status"] = "Failed"
+    elif re.search(r"(pending|processing)", normalized_text):
+        result["status"] = "Pending"
+
+    # --- Amount Detection ---
     cleaned_text = text.replace(",", "").replace("INR", "₹").replace("Rs.", "₹").replace("Rs", "₹")
     possible_amounts = []
 
     amount_patterns = [
-        r"[₹]\s*([0-9]{2,7}(?:\.\d{1,2})?)",  # ₹10000 or ₹ 10000.00
-        r"(?i)(?:amount|paid|debited|credited|received)\s*[:\-]?\s*₹?\s*([0-9]{2,7}(?:\.\d{1,2})?)",
+        r"[₹]\s*([0-9]{2,7}(?:\.\d{1,2})?)",
+        r"(?i)(?:amount|paid|debited|credited|received)\s*[:\-]?\s*₹?\s*([0-9]{2,7}(?:\.\d{1,2})?)"
     ]
-
     for pattern in amount_patterns:
         for match in re.findall(pattern, cleaned_text, flags=re.IGNORECASE):
             try:
                 amt = float(match)
-                if 1 <= amt <= 10000:  # extended to 1M
+                if 1 <= amt <= 1000000:
                     possible_amounts.append(amt)
             except:
                 continue
-
-    # Fallback pattern: Any standalone 3–7 digit numbers that look like amounts
     if not possible_amounts:
-        fallback_matches = re.findall(r"\b([0-9]{3,7}(?:\.\d{1,2})?)\b", cleaned_text)
-        for match in fallback_matches:
+        fallback = re.findall(r"\b([0-9]{3,7}(?:\.\d{1,2})?)\b", cleaned_text)
+        for match in fallback:
             try:
                 amt = float(match)
-                if 1 <= amt <= 10000:
+                if 1 <= amt <= 1000000:
                     possible_amounts.append(amt)
             except:
                 continue
-
     if possible_amounts:
         result["amount"] = max(possible_amounts)
-        logging.info(f"Amount detected (₹ logic + fallback): {result['amount']}")
+        logging.info(f"Detected amount: ₹{result['amount']}")
     else:
-        logging.warning("No valid amount detected using ₹-based or fallback logic.")
-    # --- END BLOCK ---
+        logging.warning("Amount not detected.")
 
-
-
+    # --- Date & Time ---
     datetime_combined_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[ap]m?)\s+(?:on|at)?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})", text, re.IGNORECASE)
     if datetime_combined_match:
         result["time"] = datetime_combined_match.group(1).strip()
         result["date"] = datetime_combined_match.group(2).strip()
     else:
-        date_pattern_1 = r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\b"
-        date_pattern_2 = r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b"
-        date_pattern_3 = r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"
-
-        date_match = re.search(date_pattern_1, text)
-        if not date_match:
-            date_match = re.search(date_pattern_2, text)
-        if not date_match:
-            date_match = re.search(date_pattern_3, text)
-
-        if date_match:
-            result["date"] = date_match.group(1).strip()
+        date_patterns = [
+            r"\b(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\b",
+            r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b",
+            r"\b(\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})\b"
+        ]
+        for pattern in date_patterns:
+            match = re.search(pattern, text)
+            if match:
+                result["date"] = match.group(1).strip()
+                break
 
         time_match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M?)\b", text, re.IGNORECASE)
         if time_match:
             result["time"] = time_match.group(1).strip()
 
-
-    txn_id_patterns = {
-        "transaction_id": r"(?:Transaction ID|TID|Txn ID|Trans ID)[:\s]*([A-Za-z0-9-]+)",
+    # --- ID Detection ---
+    id_patterns = {
+        "transaction_id": r"(?:Transaction ID|TID|Txn ID|Trans ID)[:\s]*([A-Za-z0-9\-]+)",
         "upi_ref_no": r"(?:UPI Ref No|UPI Ref|Reference No)[:\s]*([0-9]+)",
         "order_id": r"(?:Order ID|Order No)[:\s]*([0-9]+)",
         "utr": r"(?:UTR|UTR No)[:\s]*([0-9]{10,})",
-        "google_transaction_id": r"(?:Google transaction ID|Google Txn ID)[:\s]*([A-Za-z0-9-]+)",
+        "google_transaction_id": r"(?:Google transaction ID|Google Txn ID)[:\s]*([A-Za-z0-9\-]+)",
         "upi_transaction_id": r"(?:UPI transaction ID|UPI Txn ID)[:\s]*([0-9]+)"
     }
-
-    for key, pattern in txn_id_patterns.items():
+    for key, pattern in id_patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             result[key] = match.group(1).strip()
 
-    if not (result["transaction_id"] or result["upi_ref_no"] or result["utr"] or result["order_id"] or result["google_transaction_id"] or result["upi_transaction_id"]):
-        generic_txn_match = re.search(r"\b([A-Z0-9]{12,})\b", text)
-        if generic_txn_match:
-            result["transaction_id"] = generic_txn_match.group(1)
+    if not any([result[k] for k in ["transaction_id", "upi_ref_no", "utr", "order_id", "google_transaction_id", "upi_transaction_id"]]):
+        generic = re.search(r"\b([A-Z0-9]{12,})\b", text)
+        if generic:
+            result["transaction_id"] = generic.group(1)
 
-    # --- FROM/TO PERSON DETECTION (UNCHANGED) ---
-    from_person_match = re.search(r"From\s*([A-Za-z\s.]+?)(?:\s*\+?\d{10}|\s*UPI ID:|\s*Bank|\n|$)", text, re.IGNORECASE | re.DOTALL)
-    if from_person_match:
-        result["from_person"] = from_person_match.group(1).strip()
-    elif "From Vijay Kumarvijay" in text:
-         result["from_person"] = "Vijay Kumarvijay"
+    # --- From / To People & UPI IDs ---
+    # TO:
+    to_match = re.search(r"To[:\s]*([A-Z\s]+)\s+Google Pay\s*[•\-]?\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
+    if to_match:
+        result["to_person"] = to_match.group(1).strip()
+        result["to_upi_id"] = to_match.group(2).strip()
 
-    from_upi_id_match = re.search(r"(?:From\s+.*?|Google Pay\s+)?([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
-    if from_upi_id_match:
-        result["from_upi_id"] = from_upi_id_match.group(1).strip()
+    # FROM:
+    from_match = re.search(r"From[:\s]*([A-Z\s]+)\s+Google Pay\s*[•\-]?\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
+    if from_match:
+        result["from_person"] = from_match.group(1).strip()
+        result["from_upi_id"] = from_match.group(2).strip()
 
-    from_phone_match = re.search(r"(?:From|Sender):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text, re.IGNORECASE)
-    if from_phone_match:
-        result["from_phone_number"] = from_phone_match.group(1).strip()
-
-    from_bank_match = re.search(r"(?:From|Debited from)\s+([A-Za-z\s]+?)\s*(?:Bank|P?N?B?\s+\d{4}|HDFC Bank\s*-\s*\d{4})", text, re.IGNORECASE)
-    if from_bank_match:
-        result["from_bank"] = from_bank_match.group(1).strip()
-
-    to_person_patterns = [
-        r"To:\s*([A-Za-z\s.]+?)(?:\n|UPI ID:|Bank|$)",
-        r"Paid to\s*([A-Za-z\s.]+?)(?:\n|\+?\d{10}|UPI ID:|Bank|$)",
-        r"Banking Name\s*:\s*([A-Za-z\s]+)",
-    ]
-
-    for pattern in to_person_patterns:
-        to_person_match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-        if to_person_match:
-            result["to_person"] = to_person_match.group(1).strip()
-            result["to_person"] = re.sub(r'\s*(\+?\d{10}|UPI ID:|Bank|Google Pay|PhonePe|Paytm).*', '', result["to_person"], flags=re.IGNORECASE).strip()
-            if result["to_person"].upper() == "S" and "SANJANA SHUKLA" in text.upper():
-                result["to_person"] = "SANJANA SHUKLA"
-            break
-
-    to_upi_id_match = re.search(r"(?:To\s+.*?|UPI ID:)\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
-    if to_upi_id_match:
-        result["to_upi_id"] = to_upi_id_match.group(1).strip()
-
-    to_phone_match = re.search(r"(?:To|Paid to):\s*.*?(\+?\d{2}\s?\d{10}|\d{10})", text, re.IGNORECASE)
-    if to_phone_match:
-        result["to_phone_number"] = to_phone_match.group(1).strip()
+    # Bank
+    bank_match = re.search(r"(Punjab National Bank|HDFC Bank|SBI|Airtel Payments Bank|ICICI Bank)", text, re.IGNORECASE)
+    if bank_match:
+        result["to_bank_name"] = bank_match.group(1).strip()
 
     return result
 
-# --- Other functions (detect_photoshop, determine_verification_status, extract_payment_info) remain unchanged ---
-# They are not included here for brevity but are part of the utils/verifier.py file.
-
+# --- Photoshop Detection ---
 def detect_photoshop(image):
-    # ... (function content as before)
     try:
         exif_data = image._getexif()
         if not exif_data:
-            logging.info("No EXIF data found. Could be an indication of editing or simply original photo.")
             return False
-
         for tag_id, value in exif_data.items():
             tag = TAGS.get(tag_id, tag_id)
             if tag in ['Software', 'ProcessingSoftware', 'CreatorTool']:
-                if 'Adobe' in str(value) or 'Photoshop' in str(value) or 'GIMP' in str(value) or 'Fotor' in str(value):
-                    logging.warning(f"Photoshop/Editing software '{value}' detected in EXIF data.")
+                if any(x in str(value) for x in ["Adobe", "Photoshop", "GIMP", "Fotor"]):
                     return True
-        logging.info("No suspicious editing software detected in EXIF data.")
         return False
-    except Exception as e:
-        logging.error(f"Error during Photoshop detection: {e}")
+    except:
         return False
 
-
+# --- Verification Logic ---
 def determine_verification_status(extracted_data):
-    # ... (function content as before)
-    """
-    Determines the overall verification status as a percentage based on exactly 6 required checks.
-    """
-    passed_checks = 0
-    total_checks = 0
-    reasons_false = []
-    target_paid_to = "VINAYAK KUMAR SHUKLA"
+    passed, total = 0, 6
+    reasons = []
+    current_time = datetime.now()
+    paid_to_target = "VINAYAK KUMAR SHUKLA"
 
-    logging.info(f"Starting 6-check verification for data: {extracted_data}")
-    current_time_ist = datetime.now()
-
-
-    # Check 1: Status (required)
-    total_checks += 1
-    if extracted_data.get("status") in ["Success", "Completed", "Paid Successfully"]:
-        passed_checks += 1
-        logging.info("Check 1 (Status): PASSED")
+    # 1. Status
+    if extracted_data.get("status") == "Success":
+        passed += 1
     else:
-        reasons_false.append(f"Status is not 'Success'. Detected: {extracted_data.get('status')}")
-        logging.info(f"Check 1 (Status): FAILED - {extracted_data.get('status')}")
+        reasons.append("Status is not successful.")
 
-
-    # Check 2: Amount (required)
-    total_checks += 1
-    if extracted_data.get("amount") is not None and isinstance(extracted_data.get("amount"), (int, float)):
-        passed_checks += 1
-        logging.info("Check 2 (Amount): PASSED")
+    # 2. Amount
+    if isinstance(extracted_data.get("amount"), (int, float)):
+        passed += 1
     else:
-        reasons_false.append("Amount could not be detected or is invalid.")
-        logging.info("Check 2 (Amount): FAILED")
+        reasons.append("Amount is invalid.")
 
-    # Check 3: Transaction ID Detected (required)
-    total_checks += 1
-    if (extracted_data.get("transaction_id") or
-            extracted_data.get("upi_ref_no") or
-            extracted_data.get("order_id") or
-            extracted_data.get("utr") or
-            extracted_data.get("google_transaction_id") or
-            extracted_data.get("upi_transaction_id")):
-        passed_checks += 1
-        logging.info("Check 3 (Transaction ID): PASSED")
+    # 3. Transaction ID
+    if any([extracted_data.get(k) for k in ["transaction_id", "upi_ref_no", "utr", "order_id", "google_transaction_id", "upi_transaction_id"]]):
+        passed += 1
     else:
-        reasons_false.append("No valid transaction/reference ID found.")
-        logging.info("Check 3 (Transaction ID): FAILED")
+        reasons.append("Missing transaction ID.")
 
-
-    # Check 4: Paid-to must be VINAYAK KUMAR SHUKLA (required)
-    total_checks += 1
-    detected_to_person = extracted_data.get("to_person")
-    if detected_to_person and detected_to_person.strip().upper() == target_paid_to.strip().upper():
-        passed_checks += 1
-        logging.info("Check 4 (Target Paid-to): PASSED")
+    # 4. Paid to correct person
+    if (extracted_data.get("to_person") or "").strip().upper() == paid_to_target.strip().upper():
+        passed += 1
     else:
-        reasons_false.append(f"Paid-to person does not match '{target_paid_to}'. Detected: '{detected_to_person}'.")
-        logging.info(f"Check 4 (Target Paid-to): FAILED - Detected: '{detected_to_person}'")
+        reasons.append("Paid-to person does not match.")
 
-
-    # Check 5: Date and Time Detected & Not older than 24 hours (required)
-    total_checks += 1
-    extracted_date_str = extracted_data.get("date")
-    extracted_time_str = extracted_data.get("time")
-
-    date_time_check_passed = False
-    if extracted_date_str and extracted_time_str:
-        try:
-            dt_formats = [
-                "%d %b %Y %I:%M %p",
-                "%d %b %Y %I:%M%p",
-                "%d %B %Y %I:%M %p",
-                "%d/%m/%Y %I:%M %p",
-                "%d %b %Y %H:%M",
-                "%d %B %Y %H:%M"
-            ]
-
-            parsed_dt = None
-            full_datetime_str = f"{extracted_date_str} {extracted_time_str}"
-
-            for fmt in dt_formats:
-                try:
-                    parsed_dt = datetime.strptime(full_datetime_str, fmt)
+    # 5. Recent Time
+    date_str, time_str = extracted_data.get("date"), extracted_data.get("time")
+    valid_time = False
+    if date_str and time_str:
+        dt_formats = [
+            "%d %b %Y %I:%M %p", "%d %B %Y %I:%M %p",
+            "%d/%m/%Y %I:%M %p", "%d %b %Y %H:%M", "%d %B %Y %H:%M"
+        ]
+        dt_full = f"{date_str} {time_str}"
+        for fmt in dt_formats:
+            try:
+                parsed = datetime.strptime(dt_full, fmt)
+                diff = current_time - parsed
+                if timedelta(0) <= diff <= timedelta(hours=24):
+                    valid_time = True
                     break
-                except ValueError:
-                    continue
-
-            if parsed_dt:
-                time_difference = current_time_ist - parsed_dt
-                max_allowed_difference = timedelta(hours=24)
-
-                if time_difference < timedelta(minutes=-2):
-                    reasons_false.append(f"Screenshot date/time is in the future. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Check 5 (Date/Time): FAILED - In future. Diff: {time_difference}")
-                elif time_difference > max_allowed_difference:
-                    reasons_false.append(f"Screenshot is older than 24 hours. Detected: {parsed_dt.strftime('%Y-%m-%d %H:%M:%S')}, Current: {current_time_ist.strftime('%Y-%m-%d %H:%M:%S')}")
-                    logging.warning(f"Check 5 (Date/Time): FAILED - Too old. Diff: {time_difference}")
+                elif diff < timedelta(0):
+                    reasons.append("Date/time is in future.")
                 else:
-                    date_time_check_passed = True
-                    logging.info("Check 5 (Date/Time): PASSED")
-            else:
-                reasons_false.append("Could not parse extracted date and time into a comparable format.")
-                logging.warning(f"Check 5 (Date/Time): FAILED - Parsing failed for '{full_datetime_str}'.")
-        except Exception as e:
-            reasons_false.append(f"Error during date/time comparison: {e}")
-            logging.error(f"Check 5 (Date/Time): FAILED - Error: {e}")
+                    reasons.append("Date/time too old.")
+            except:
+                continue
+    if valid_time:
+        passed += 1
     else:
-        reasons_false.append("Date or Time information not fully detected, cannot verify recency.")
-        logging.warning("Check 5 (Date/Time): FAILED - Partial date/time info.")
+        reasons.append("Invalid or missing date/time.")
 
-    if date_time_check_passed:
-        passed_checks += 1
-
-
-    # Check 6: Photoshop Detection
-    total_checks += 1
-    if extracted_data.get("photoshop_detected", False):
-        reasons_false.append("Potential Photoshop manipulation detected.")
-        logging.warning("Check 6 (Photoshop): FAILED - Manipulation detected.")
+    # 6. Photoshop
+    if extracted_data.get("photoshop_detected"):
+        reasons.append("Possible Photoshop manipulation.")
     else:
-        passed_checks += 1
-        logging.info("Check 6 (Photoshop): PASSED")
+        passed += 1
 
-
-    # Calculate percentage
-    verified_percentage = 0
-    if total_checks > 0:
-        verified_percentage = (passed_checks / total_checks) * 100
-    verified_percentage = round(verified_percentage, 2)
-
-    # Final decision for "verified: true/false"
-    final_verified_bool = (verified_percentage >= 80)
-
-    # Override if Photoshop was detected
-    if extracted_data.get("photoshop_detected", False):
-        final_verified_bool = False
-        verified_percentage = min(verified_percentage, 25.0)
+    percentage = round((passed / total) * 100, 2)
+    verified = percentage >= 80 and "Photoshop" not in "".join(reasons)
 
     return {
-        "verified": final_verified_bool,
-        "verified_percentage": verified_percentage,
-        "reasons_for_false": reasons_false if not final_verified_bool else []
+        "verified": verified,
+        "verified_percentage": percentage,
+        "reasons_for_false": reasons if not verified else []
     }
-
-
-def extract_payment_info(image):
-    text = pytesseract.image_to_string(image)
-    logging.info(f"OCR extracted text:\n{text[:500]}...")
-    return advanced_parse_payment_text(text)
