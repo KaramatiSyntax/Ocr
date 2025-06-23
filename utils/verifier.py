@@ -93,7 +93,11 @@ def advanced_parse_payment_text(text):
             except:
                 continue
     if possible_amounts:
-        result["amount"] = max(possible_amounts)
+    detected = max(possible_amounts)
+    if str(int(detected)).startswith("2"):
+        detected = float(str(int(detected))[1:])  # Remove first '2'
+        logging.info(f"Trimmed leading 2 from OCR amount: ₹{detected}")
+    result["amount"] = detected
         logging.info(f"Detected amount: ₹{result['amount']}")
     else:
         logging.warning("Amount not detected.")
