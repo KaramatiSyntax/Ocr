@@ -83,6 +83,7 @@ def advanced_parse_payment_text(text):
                     possible_amounts.append(amt)
             except:
                 continue
+
     if not possible_amounts:
         fallback = re.findall(r"\b([0-9]{3,7}(?:\.\d{1,2})?)\b", cleaned_text)
         for match in fallback:
@@ -92,12 +93,13 @@ def advanced_parse_payment_text(text):
                     possible_amounts.append(amt)
             except:
                 continue
+
     if possible_amounts:
-    detected = max(possible_amounts)
-    if str(int(detected)).startswith("2"):
-        detected = float(str(int(detected))[1:])  # Remove first '2'
-        logging.info(f"Trimmed leading 2 from OCR amount: ₹{detected}")
-    result["amount"] = detected
+        detected = max(possible_amounts)
+        if str(int(detected)).startswith("2"):
+            detected = float(str(int(detected))[1:])  # Remove first digit if it's 2
+            logging.info(f"Trimmed leading 2 from OCR amount: ₹{detected}")
+        result["amount"] = detected
         logging.info(f"Detected amount: ₹{result['amount']}")
     else:
         logging.warning("Amount not detected.")
@@ -143,19 +145,16 @@ def advanced_parse_payment_text(text):
             result["transaction_id"] = generic.group(1)
 
     # --- From / To People & UPI IDs ---
-    # TO:
     to_match = re.search(r"To[:\s]*([A-Z\s]+)\s+Google Pay\s*[•\-]?\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
     if to_match:
         result["to_person"] = to_match.group(1).strip()
         result["to_upi_id"] = to_match.group(2).strip()
 
-    # FROM:
     from_match = re.search(r"From[:\s]*([A-Z\s]+)\s+Google Pay\s*[•\-]?\s*([a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+)", text, re.IGNORECASE)
     if from_match:
         result["from_person"] = from_match.group(1).strip()
         result["from_upi_id"] = from_match.group(2).strip()
 
-    # Bank
     bank_match = re.search(r"(Punjab National Bank|HDFC Bank|SBI|Airtel Payments Bank|ICICI Bank)", text, re.IGNORECASE)
     if bank_match:
         result["to_bank_name"] = bank_match.group(1).strip()
